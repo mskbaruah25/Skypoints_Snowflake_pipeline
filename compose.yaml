@@ -1,0 +1,329 @@
+# Initial scaffold; see README.md for the remaining implementation work.
+# Local demonstration stack; Snowflake remains an external cloud service.
+# One project Dockerfile has named targets; Compose starts the separate containers.
+name: skypoints
+
+x-airflow-environment: &airflow-environment
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://airflow:${AIRFLOW_DB_PASSWORD:?Set AIRFLOW_DB_PASSWORD}@airflow-db:5432/airflow_metadata
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?Set AIRFLOW_FERNET_KEY}
+  AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?Set AIRFLOW_API_SECRET_KEY}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?Set AIRFLOW_JWT_SECRET}
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+  AIRFLOW__CORE__DEFAULT_TIMEZONE: UTC
+  AIRFLOW__CORE__PARALLELISM: "2"
+  AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "1"
+  AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  PYTHONPATH: /opt/airflow/src
+  SKYPOINTS_DAG_ID: skypoints_ingestion
+
+x-airflow-dependencies: &airflow-dependencies
+  airflow-db:
+    condition: service_healthy
+  airflow-init:
+    condition: service_completed_successfully
+
+x-airflow-common: &airflow-common
+  image: skypoints-airflow:dev
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: airflow
+    args:
+      AIRFLOW_BASE_IMAGE: apache/airflow:3.4.0-python3.11
+      PYSPARK_VERSION: "3.5.7"
+      HADOOP_AWS_VERSION: "3.3.4"
+      AWS_SDK_BUNDLE_VERSION: "1.12.262"
+      SNOWFLAKE_SPARK_VERSION: 3.2.0-spark_3.5
+      SNOWFLAKE_JDBC_VERSION: "4.0.2"
+  environment: *airflow-environment
+  volumes:
+    - ./dags:/opt/airflow/dags:ro
+    - ./src:/opt/airflow/src:ro
+    - ./sql:/opt/airflow/sql:ro
+    - ./scripts:/opt/airflow/scripts:ro
+    - airflow-logs:/opt/airflow/logs
+  networks:
+    - pipeline
+  restart: unless-stopped
+  init: true
+  mem_limit: 1g
+
+services:
+  airflow-db:
+    image: postgres:16.11-bookworm
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?Set AIRFLOW_DB_PASSWORD}
+      POSTGRES_DB: airflow_metadata
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - pipeline
+    restart: unless-stopped
+    mem_limit: 512m
+
+  minio:
+    image: skypoints-minio:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: minio
+      args:
+        MINIO_RELEASE: RELEASE.2025-10-15T17-29-55Z
+        GO_VERSION: "1.24.8"
+    command: [server, /data, --console-address, ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      MINIO_NOTIFY_WEBHOOK_ENABLE_AIRFLOW: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_AIRFLOW: http://event-handler:8000/events/minio
+      MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_AIRFLOW: ${MINIO_WEBHOOK_AUTHORIZATION:?Set MINIO_WEBHOOK_AUTHORIZATION}
+      MINIO_NOTIFY_WEBHOOK_QUEUE_DIR_AIRFLOW: /queue
+      MINIO_NOTIFY_WEBHOOK_QUEUE_LIMIT_AIRFLOW: "10000"
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+      - minio-event-queue:/queue
+    healthcheck:
+      # curl is included in the MinIO runtime image.
+      test: [CMD, curl, --fail, --silent, http://localhost:9000/minio/health/ready]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - pipeline
+    restart: unless-stopped
+    init: true
+    mem_limit: 1g
+
+  airflow-init:
+    <<: *airflow-common
+    # Explicit migration/bootstrap: do not bypass /entrypoint and rely on its flags.
+    entrypoint: [/bin/bash, -ec]
+    command:
+      - |
+        airflow db migrate
+        python /opt/airflow/scripts/bootstrap_airflow.py
+    environment:
+      <<: *airflow-environment
+      AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?Set AIRFLOW_ADMIN_PASSWORD}
+      AIRFLOW_REVIEWER_USERNAME: ${AIRFLOW_REVIEWER_USERNAME:-reviewer}
+      AIRFLOW_REVIEWER_PASSWORD: ${AIRFLOW_REVIEWER_PASSWORD:?Set AIRFLOW_REVIEWER_PASSWORD}
+      AIRFLOW_TRIGGER_USERNAME: ${AIRFLOW_TRIGGER_USERNAME:-minio-trigger}
+      AIRFLOW_TRIGGER_PASSWORD: ${AIRFLOW_TRIGGER_PASSWORD:?Set AIRFLOW_TRIGGER_PASSWORD}
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    restart: "no"
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: [api-server, --workers, "1"]
+    ports:
+      - "127.0.0.1:${AIRFLOW_UI_PORT:-8080}:8080"
+    depends_on: *airflow-dependencies
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v2/monitor/health', timeout=5)"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: [dag-processor]
+    depends_on: *airflow-dependencies
+    healthcheck:
+      test: [CMD-SHELL, 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: [scheduler]
+    environment:
+      <<: *airflow-environment
+      # Only the task runtime receives business-data credentials.
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-skypoints-landing}
+      MINIO_REGION: us-east-1
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:?Set SNOWFLAKE_ACCOUNT}
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER:?Set SNOWFLAKE_USER}
+      SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:?Set SNOWFLAKE_ROLE}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:?Set SNOWFLAKE_WAREHOUSE}
+      SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-SKYPOINTS}
+      SNOWFLAKE_PRIVATE_KEY_FILE: /run/secrets/snowflake_private_key
+      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:-}
+      PYSPARK_PYTHON: /opt/spark-venv/bin/python
+      SKYPOINTS_SPARK_SUBMIT: /opt/spark-venv/bin/spark-submit
+      SKYPOINTS_SPARK_MASTER: local[2]
+      SKYPOINTS_SPARK_DRIVER_MEMORY: 1g
+    secrets:
+      - snowflake_private_key
+    depends_on:
+      <<: *airflow-dependencies
+      airflow-api-server:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    mem_limit: 4g
+    stop_grace_period: 60s
+
+  event-handler:
+    image: skypoints-event-handler:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: event-handler
+    command: [uvicorn, skypoints.event_handler:app, --host, 0.0.0.0, --port, "8000"]
+    environment:
+      AIRFLOW_API_URL: http://airflow-api-server:8080
+      AIRFLOW_TRIGGER_USERNAME: ${AIRFLOW_TRIGGER_USERNAME:-minio-trigger}
+      AIRFLOW_TRIGGER_PASSWORD: ${AIRFLOW_TRIGGER_PASSWORD:?Set AIRFLOW_TRIGGER_PASSWORD}
+      MINIO_WEBHOOK_AUTHORIZATION: ${MINIO_WEBHOOK_AUTHORIZATION:?Set MINIO_WEBHOOK_AUTHORIZATION}
+      MINIO_BUCKET: ${MINIO_BUCKET:-skypoints-landing}
+      SKYPOINTS_DAG_ID: skypoints_ingestion
+      SKYPOINTS_MANIFEST_PREFIX: deliveries/
+      SKYPOINTS_MANIFEST_SUFFIX: /ready.json
+    depends_on:
+      airflow-api-server:
+        condition: service_healthy
+      airflow-scheduler:
+        condition: service_healthy
+      airflow-dag-processor:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - pipeline
+    restart: unless-stopped
+    init: true
+    mem_limit: 256m
+
+  minio-init:
+    # Reuse the custom Python runtime; its locked dependencies include the MinIO SDK.
+    image: skypoints-airflow:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: airflow
+      args:
+        AIRFLOW_BASE_IMAGE: apache/airflow:3.4.0-python3.11
+        PYSPARK_VERSION: "3.5.7"
+        HADOOP_AWS_VERSION: "3.3.4"
+        AWS_SDK_BUNDLE_VERSION: "1.12.262"
+        SNOWFLAKE_SPARK_VERSION: 3.2.0-spark_3.5
+        SNOWFLAKE_JDBC_VERSION: "4.0.2"
+    entrypoint: [python, /opt/airflow/scripts/bootstrap_minio.py]
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-skypoints-landing}
+      MINIO_REGION: us-east-1
+      MINIO_WEBHOOK_TARGET_ARN: arn:minio:sqs::AIRFLOW:webhook
+      SKYPOINTS_MANIFEST_PREFIX: deliveries/
+      SKYPOINTS_MANIFEST_SUFFIX: /ready.json
+    volumes:
+      - ./scripts:/opt/airflow/scripts:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+      event-handler:
+        condition: service_healthy
+    networks:
+      - pipeline
+    restart: "no"
+    init: true
+    mem_limit: 512m
+
+  data-generator:
+    # Private sibling folder: build input, not part of the pipeline source tree.
+    image: skypoints-data-generator:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: data-generator
+      additional_contexts:
+        generator_source: ${DATA_GENERATOR_DIR:-../data-generator}
+    command: [python, /app/generate.py]
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-skypoints-landing}
+      MINIO_REGION: us-east-1
+      GENERATOR_BATCH_ID: ${GENERATOR_BATCH_ID:-demo-001}
+      GENERATOR_SEED: ${GENERATOR_SEED:-42}
+      GENERATOR_MEMBER_COUNT: ${GENERATOR_MEMBER_COUNT:-100}
+      GENERATOR_AS_OF_DATE: ${GENERATOR_AS_OF_DATE:?Set GENERATOR_AS_OF_DATE}
+      GENERATOR_INPUT_DIR: /input
+      GENERATOR_OUTPUT_DIR: /output
+      GENERATOR_UPLOAD: "true"
+    volumes:
+      - type: bind
+        source: ${DATA_GENERATOR_DIR:-../data-generator}/input
+        target: /input
+        read_only: true
+        bind:
+          create_host_path: false
+      - generator-output:/output
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      - pipeline
+    # One batch per invocation. A successful exit is expected, not a failed service.
+    restart: "no"
+    init: true
+    mem_limit: 512m
+
+volumes:
+  minio-data:
+  minio-event-queue:
+  airflow-db-data:
+  airflow-logs:
+  generator-output:
+
+networks:
+  pipeline:
+    driver: bridge
+
+secrets:
+  snowflake_private_key:
+    file: ${SNOWFLAKE_PRIVATE_KEY_FILE:?Set SNOWFLAKE_PRIVATE_KEY_FILE}

@@ -1,0 +1,4 @@
+# Direct dependencies for the isolated Spark Python environment.
+# PySpark 3.5.7 is installed explicitly by the Dockerfile.
+minio==7.2.20
+cryptography==50.0.2

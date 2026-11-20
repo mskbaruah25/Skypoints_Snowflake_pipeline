@@ -1,0 +1,1 @@
+-- Implementation pending: unique current member state and deduplicated redemptions.

@@ -1,0 +1,3 @@
+-- Implementation pending: global latest-version resolution followed by atomic
+-- current-member update, old-country deletion, destination upsert, and audit commit.
+-- Provision all required country tables before the DML transaction starts.
