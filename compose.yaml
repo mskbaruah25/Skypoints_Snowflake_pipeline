@@ -92,8 +92,9 @@ services:
       MINIO_NOTIFY_WEBHOOK_QUEUE_DIR_AIRFLOW: /queue
       MINIO_NOTIFY_WEBHOOK_QUEUE_LIMIT_AIRFLOW: "10000"
     ports:
-      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+      # Fixed host ports: do not switch ports to work around a conflict.
+      - "127.0.0.1:19000:9000"
+      - "127.0.0.1:19001:9001"
     volumes:
       - minio-data:/data
       - minio-event-queue:/queue
@@ -135,7 +136,7 @@ services:
     <<: *airflow-common
     command: [api-server, --workers, "1"]
     ports:
-      - "127.0.0.1:${AIRFLOW_UI_PORT:-8080}:8080"
+      - "127.0.0.1:18080:8080"
     depends_on: *airflow-dependencies
     healthcheck:
       test:

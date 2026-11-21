@@ -50,7 +50,9 @@ the parent workspace.
 Requirements: Docker with Compose 2.17+ and BuildKit, an existing Snowflake account,
 and a private key for the pipeline identity.
 
-1. Copy `.env.example` to `.env` and replace its placeholders. Keep `.env` private.
+1. The tracked `.env` contains generated local demo credentials and Snowflake
+   placeholders. For real Snowflake settings, copy it to the ignored `.env.local`,
+   update that file, and select it with `docker compose --env-file .env.local ...`.
 2. Put the Snowflake key at the configured path, normally `secrets/snowflake_key.p8`.
 3. Set `DATA_GENERATOR_DIR` if the sibling generator is stored somewhere else.
 4. Complete the implementation items listed below before attempting a full demo.
@@ -76,9 +78,26 @@ The one-shot jobs initialise Airflow, configure the MinIO bucket/notification, a
 run the separate generator. A completed generator exits normally; it is not an
 always-running data service. Its implementation is still pending in this commit.
 
-Local entry points are Airflow at `http://localhost:8080`, MinIO's S3 API at
-`http://localhost:9000`, and MinIO's object browser at `http://localhost:9001`.
-Ports bind to localhost. No services are published to the Internet by this setup.
+Local entry points use fixed host ports in `compose.yaml`:
+
+| Service | Host address | Container port |
+| --- | --- | --- |
+| Airflow UI/API | `http://localhost:18080` | 8080 |
+| MinIO S3 API | `http://localhost:19000` | 9000 |
+| MinIO object browser | `http://localhost:19001` | 9001 |
+| Notification handler | Compose network only | 8000 |
+| Airflow metadata PostgreSQL | Compose network only | 5432 |
+
+The scheduler, DAG processor, one-shot jobs, and local Spark jobs have no published
+host ports. Container-to-container URLs retain their internal ports.
+
+Keep these host ports consistent across restarts. If a port is occupied, identify
+its owner. Stop a stale SkyPoints process/container only after verifying ownership;
+do not stop unrelated projects or silently choose a different port. Stopped
+containers do not hold listening ports.
+
+Published ports bind to localhost. No services are published to the Internet by
+this setup.
 
 ## Storage and secrets
 
@@ -88,8 +107,11 @@ Airflow logs, and generator output. Normal `docker compose down` retains them;
 
 Only the scheduler/task runtime receives the Snowflake key and connection settings.
 The handler and generator do not receive Snowflake credentials. The generator's
-input directory is mounted read-only. Real credentials and local datasets are
-excluded from Git and Docker build contexts.
+input directory is mounted read-only. The local demo `.env` is tracked at the
+project owner's request, so its generated credentials are part of Git history.
+Private overrides, keys, and local datasets remain ignored. Environment files and
+keys are excluded from Docker build contexts. Keep real Snowflake credentials in
+the ignored override file or supply them through the shell environment.
 
 The local bootstrap and Spark tasks currently share local MinIO credentials.
 Hosted deployment should use a scoped ingestion identity, HTTPS, and deliberate

@@ -1,4 +1,4 @@
-.env
+# .env is tracked for the local demo; private overrides remain ignored.
 .env.*
 !.env.example
 secrets/*
