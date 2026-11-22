@@ -5,7 +5,12 @@ from urllib.parse import urlsplit
 
 from minio import Minio
 from minio.error import S3Error
-from minio.notificationconfig import NotificationConfig, QueueConfig
+from minio.notificationconfig import (
+    NotificationConfig,
+    PrefixFilterRule,
+    QueueConfig,
+    SuffixFilterRule,
+)
 
 
 def main() -> None:
@@ -31,11 +36,15 @@ def main() -> None:
         NotificationConfig(
             queue_config_list=[
                 QueueConfig(
-                    os.environ["MINIO_WEBHOOK_TARGET_ARN"],
-                    ["s3:ObjectCreated:Put", "s3:ObjectCreated:CompleteMultipartUpload"],
+                    queue=os.environ["MINIO_WEBHOOK_TARGET_ARN"],
+                    events=["s3:ObjectCreated:Put", "s3:ObjectCreated:CompleteMultipartUpload"],
                     config_id="skypoints-ready-manifests",
-                    prefix_filter_rule=os.environ.get("SKYPOINTS_MANIFEST_PREFIX", "deliveries/"),
-                    suffix_filter_rule=os.environ.get("SKYPOINTS_MANIFEST_SUFFIX", "/ready.json"),
+                    prefix_filter_rule=PrefixFilterRule(
+                        os.environ.get("SKYPOINTS_MANIFEST_PREFIX", "deliveries/"),
+                    ),
+                    suffix_filter_rule=SuffixFilterRule(
+                        os.environ.get("SKYPOINTS_MANIFEST_SUFFIX", "/ready.json"),
+                    ),
                 )
             ]
         ),

@@ -12,6 +12,8 @@ logs/
 .git/
 .venv/
 venv/
+/skypoints/
+/.python/
 **/__pycache__/
 **/*.pyc
 **/.ipynb_checkpoints/

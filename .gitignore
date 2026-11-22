@@ -12,6 +12,8 @@ logs/
 output/
 .venv/
 venv/
+/skypoints/
+/.python/
 __pycache__/
 *.py[cod]
 *.egg-info/

@@ -25,7 +25,9 @@ country-table DDL must be outside this transaction. Retries must preserve result
 ## Runtime and storage
 
 One multi-target Dockerfile builds the four custom images. Compose starts six
-long-running services and three one-shot jobs. Snowflake remains external.
+long-running services and two one-shot setup jobs. The generator is an optional
+tool under the `tools` profile; it does not run during normal startup. Snowflake
+remains external, and its key is not required to start the local services.
 PostgreSQL is used only for Airflow metadata. Docker volumes retain object data,
 pending notifications, logs, metadata, and generator output across restarts.
 

@@ -4,7 +4,8 @@ The end-to-end demonstration is not implemented in the initial scaffold.
 
 Once implemented:
 
-1. Configure the local environment and Snowflake identity/objects.
+1. Configure the local environment. Add Snowflake identity/objects before testing
+   warehouse tasks; the local services can start without them.
 2. Run `docker compose up --build -d`.
 3. Inspect the generated member and JSON feeds in MinIO.
 4. Follow the Airflow DAG, logs, row counts, and validation outcomes.

@@ -6,7 +6,7 @@ name: skypoints
 x-airflow-environment: &airflow-environment
   AIRFLOW__CORE__EXECUTOR: LocalExecutor
   AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://airflow:${AIRFLOW_DB_PASSWORD:?Set AIRFLOW_DB_PASSWORD}@airflow-db:5432/airflow_metadata
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://${AIRFLOW_DB_USERNAME:-admin}:${AIRFLOW_DB_PASSWORD:?Set AIRFLOW_DB_PASSWORD}@airflow-db:5432/airflow_metadata
   AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?Set AIRFLOW_FERNET_KEY}
   AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?Set AIRFLOW_API_SECRET_KEY}
   AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?Set AIRFLOW_JWT_SECRET}
@@ -29,17 +29,6 @@ x-airflow-dependencies: &airflow-dependencies
 
 x-airflow-common: &airflow-common
   image: skypoints-airflow:dev
-  build:
-    context: .
-    dockerfile: Dockerfile
-    target: airflow
-    args:
-      AIRFLOW_BASE_IMAGE: apache/airflow:3.4.0-python3.11
-      PYSPARK_VERSION: "3.5.7"
-      HADOOP_AWS_VERSION: "3.3.4"
-      AWS_SDK_BUNDLE_VERSION: "1.12.262"
-      SNOWFLAKE_SPARK_VERSION: 3.2.0-spark_3.5
-      SNOWFLAKE_JDBC_VERSION: "4.0.2"
   environment: *airflow-environment
   volumes:
     - ./dags:/opt/airflow/dags:ro
@@ -57,7 +46,7 @@ services:
   airflow-db:
     image: postgres:16.11-bookworm
     environment:
-      POSTGRES_USER: airflow
+      POSTGRES_USER: ${AIRFLOW_DB_USERNAME:-admin}
       POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?Set AIRFLOW_DB_PASSWORD}
       POSTGRES_DB: airflow_metadata
     volumes:
@@ -113,6 +102,18 @@ services:
 
   airflow-init:
     <<: *airflow-common
+    # Build the shared image once; all Airflow services reuse this tag.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: airflow
+      args:
+        AIRFLOW_BASE_IMAGE: apache/airflow:3.4.0-python3.11
+        PYSPARK_VERSION: "3.5.7"
+        HADOOP_AWS_VERSION: "3.3.4"
+        AWS_SDK_BUNDLE_VERSION: "1.12.262"
+        SNOWFLAKE_SPARK_VERSION: 3.2.0-spark_3.5
+        SNOWFLAKE_JDBC_VERSION: "4.0.2"
     # Explicit migration/bootstrap: do not bypass /entrypoint and rely on its flags.
     entrypoint: [/bin/bash, -ec]
     command:
@@ -123,9 +124,9 @@ services:
       <<: *airflow-environment
       AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
       AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?Set AIRFLOW_ADMIN_PASSWORD}
-      AIRFLOW_REVIEWER_USERNAME: ${AIRFLOW_REVIEWER_USERNAME:-reviewer}
+      AIRFLOW_REVIEWER_USERNAME: ${AIRFLOW_REVIEWER_USERNAME:-admin}
       AIRFLOW_REVIEWER_PASSWORD: ${AIRFLOW_REVIEWER_PASSWORD:?Set AIRFLOW_REVIEWER_PASSWORD}
-      AIRFLOW_TRIGGER_USERNAME: ${AIRFLOW_TRIGGER_USERNAME:-minio-trigger}
+      AIRFLOW_TRIGGER_USERNAME: ${AIRFLOW_TRIGGER_USERNAME:-admin}
       AIRFLOW_TRIGGER_PASSWORD: ${AIRFLOW_TRIGGER_PASSWORD:?Set AIRFLOW_TRIGGER_PASSWORD}
     depends_on:
       airflow-db:
@@ -171,19 +172,31 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-skypoints-landing}
       MINIO_REGION: us-east-1
-      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:?Set SNOWFLAKE_ACCOUNT}
-      SNOWFLAKE_USER: ${SNOWFLAKE_USER:?Set SNOWFLAKE_USER}
-      SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:?Set SNOWFLAKE_ROLE}
-      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:?Set SNOWFLAKE_WAREHOUSE}
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER:-}
+      SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:-}
+      SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-}
       SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-SKYPOINTS}
-      SNOWFLAKE_PRIVATE_KEY_FILE: /run/secrets/snowflake_private_key
+      SNOWFLAKE_PRIVATE_KEY_FILE: ${SNOWFLAKE_PRIVATE_KEY_FILE:-/run/secrets/snowflake_key.p8}
       SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:-}
       PYSPARK_PYTHON: /opt/spark-venv/bin/python
       SKYPOINTS_SPARK_SUBMIT: /opt/spark-venv/bin/spark-submit
       SKYPOINTS_SPARK_MASTER: local[2]
       SKYPOINTS_SPARK_DRIVER_MEMORY: 1g
-    secrets:
-      - snowflake_private_key
+    volumes:
+      - ./dags:/opt/airflow/dags:ro
+      - ./src:/opt/airflow/src:ro
+      - ./sql:/opt/airflow/sql:ro
+      - ./scripts:/opt/airflow/scripts:ro
+      - airflow-logs:/opt/airflow/logs
+      # Mount the directory so an absent warehouse key does not block local startup.
+      # Warehouse tasks must validate their credentials before connecting.
+      - type: bind
+        source: ${SNOWFLAKE_SECRETS_DIR:-./secrets}
+        target: /run/secrets
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       <<: *airflow-dependencies
       airflow-api-server:
@@ -206,7 +219,7 @@ services:
     command: [uvicorn, skypoints.event_handler:app, --host, 0.0.0.0, --port, "8000"]
     environment:
       AIRFLOW_API_URL: http://airflow-api-server:8080
-      AIRFLOW_TRIGGER_USERNAME: ${AIRFLOW_TRIGGER_USERNAME:-minio-trigger}
+      AIRFLOW_TRIGGER_USERNAME: ${AIRFLOW_TRIGGER_USERNAME:-admin}
       AIRFLOW_TRIGGER_PASSWORD: ${AIRFLOW_TRIGGER_PASSWORD:?Set AIRFLOW_TRIGGER_PASSWORD}
       MINIO_WEBHOOK_AUTHORIZATION: ${MINIO_WEBHOOK_AUTHORIZATION:?Set MINIO_WEBHOOK_AUTHORIZATION}
       MINIO_BUCKET: ${MINIO_BUCKET:-skypoints-landing}
@@ -239,17 +252,6 @@ services:
   minio-init:
     # Reuse the custom Python runtime; its locked dependencies include the MinIO SDK.
     image: skypoints-airflow:dev
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: airflow
-      args:
-        AIRFLOW_BASE_IMAGE: apache/airflow:3.4.0-python3.11
-        PYSPARK_VERSION: "3.5.7"
-        HADOOP_AWS_VERSION: "3.3.4"
-        AWS_SDK_BUNDLE_VERSION: "1.12.262"
-        SNOWFLAKE_SPARK_VERSION: 3.2.0-spark_3.5
-        SNOWFLAKE_JDBC_VERSION: "4.0.2"
     entrypoint: [python, /opt/airflow/scripts/bootstrap_minio.py]
     environment:
       MINIO_ENDPOINT: http://minio:9000
@@ -275,6 +277,8 @@ services:
 
   data-generator:
     # Private sibling folder: build input, not part of the pipeline source tree.
+    # Manual source uploads are the default; this tool is explicitly opt-in.
+    profiles: [tools]
     image: skypoints-data-generator:dev
     build:
       context: .
@@ -324,7 +328,3 @@ volumes:
 networks:
   pipeline:
     driver: bridge
-
-secrets:
-  snowflake_private_key:
-    file: ${SNOWFLAKE_PRIVATE_KEY_FILE:?Set SNOWFLAKE_PRIVATE_KEY_FILE}
