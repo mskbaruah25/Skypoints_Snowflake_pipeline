@@ -58,6 +58,8 @@ Now, coming to the pipeline, here is how you can use this repository to set up t
 
 ## 2. Run one complete pipeline locally using Docker
 
+**To review the main pipeline code, open the [RAW](src/skypoints/stages/raw.ipynb), [STAGING](src/skypoints/stages/staging.ipynb), and [GOLD](src/skypoints/stages/gold.ipynb) notebooks in `src/skypoints/stages/`, in that order. You can view their code cells directly on GitHub without starting Docker.**
+
 One pipeline run takes **both files from one sample folder**, processes them through **RAW → STAGING → GOLD**, and saves the results in Snowflake.
 
 **Prerequisites:** Git, Docker with Docker Compose, and a Snowflake pipeline user with write permissions and key-pair authentication. The evaluator login above provides read-only access.
