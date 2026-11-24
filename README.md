@@ -183,7 +183,17 @@ docker compose --env-file .env --env-file .env.local --profile airflow stop
 
 Stopping the services retains MinIO files, Airflow metadata, and logs in Docker volumes.
 
-## 3. Project architecture
+## 3. CAVEATS(must read)
+
+- We interpreted the supplied `USA(in).csv`, `IND(in).csv`, and `AUS(Sheet1).csv` files as examples of the expected country-specific GOLD table layouts. The source inputs follow the assessment's member flat-file and redemption JSON formats. The sample pairs were generated to follow those source formats. Countries without their own supplied layout use the USA layout.
+
+- The India CSV contains an **Individual or Corporate** column. This field is absent from the specified source fields and cannot be reliably derived from them, so it is deliberately omitted from `SKYPOINTS.GOLD.TABLE_INDIA`. We do not invent a value for it.
+
+- RAW uses a **SHA-256 batch fingerprint** to prevent duplicate appends when the same delivery is retried. It combines record content and counts from both feeds, independently of row order, filenames, ingestion metadata, and `PARTITION_DATE`. The fingerprint is checked against `RAW.BATCH_INGESTION_LOG`; an already registered batch is skipped. This avoids comparing incoming records against the entire RAW history. RAW records and their fingerprint registration are committed in the same transaction.
+
+- This protects against **replaying an identical whole batch**, rather than overlapping records in different batches. Mixing a processed pair with a new pair creates a different batch and can append the older records again. STAGING performs validation and deduplication within the selected partition. Keep only the intended delivery in the MinIO landing bucket, archive previous pairs before uploading a new delivery, and reuse the original processing date when retrying the same batch.
+
+## 4. Project architecture
 
 The processing services run locally in Docker. Business data is stored in Snowflake throughout the RAW, STAGING, and GOLD stages.
 
