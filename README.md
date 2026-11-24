@@ -1,174 +1,206 @@
-# SkyPoints pipeline
+# SkyPoints Pipeline
 
-Airline loyalty data processing with MinIO, local PySpark, Airflow, and Snowflake.
+Hello there, reviewer. This project implements the SkyPoints pipeline described in [DE_Assessment_file.pdf](https://incubytein-my.sharepoint.com/:b:/g/personal/tanuja_incubyte_co/IQBvHDRVzESATYSafwTDmtJiAcPV70SUV7UR-ife4CGKSes?e=x0zODI).
 
-The RAW, STAGING, and GOLD notebooks hold the processing logic. The manual Airflow
-DAG runs them in order with one selected processing date. The orchestration code
-and small-kernel tests are in place. The approved notebook configuration changes
-have been applied.
-A Docker image build and a real orchestrated warehouse run have not been tested
-for this change.
+First things first.
 
-## Manual workflow
+**If you just want to review the end goals, you can directly log in to Snowflake and check the tables and databases. To check the databases, please log in to this Snowflake workspace using the following details:**
 
-1. Upload a complete delivery to the root of the MinIO landing bucket:
-   `members_*.txt` and `redemptions_*.json`.
-2. Open Airflow and trigger `skypoints_ingestion`.
-3. Enter `partition_date` as an eight-character string, such as `23112026`.
-4. Airflow runs `load_raw -> load_staging -> load_gold`.
+**Workspace:** [Open Snowflake](https://app.snowflake.com/vgbuylt/wz85427)
 
-RAW labels the incoming records with that date. STAGING reads that date's RAW
-partition, and GOLD reads that date's STAGING partition. The date does not select
-files by filename or upload time; RAW reads the matching files currently at the
-bucket root.
+**Username:** `SKYPOINTS_EVALUATOR`
 
-Keep only the intended delivery in landing. Move previous deliveries to a separate
-archive location before uploading a new delivery. Automatic landing-file archiving
-is still pending.
+**Password:** `Incubyteskypoints1`
 
-There is no automatic schedule or file-drop trigger. Only one DAG run and one
-notebook task run at a time. A task failure blocks downstream work; use the same
-date when retrying the failed task.
+This login provides read-only access to the existing pipeline results.
 
-## Start services when needed
+## 1. Review the results in Snowflake
 
-Docker Desktop must already be running. These commands do not configure its VM
-resources.
+1. Sign in using the details above.
 
-For MinIO and its one-shot bucket setup only:
+2. Select the role SKYPOINTS_REVIEWER_ROLE if not already selected by default.
 
-~~~sh
-docker compose up -d --build
-~~~
+3. Open Catalogue → Explorer and expand the SKYPOINTS database. You will find these three schemas. [Snowflake navigation guide](https://docs.snowflake.com/en/user-guide/ui-snowsight-data).
 
-The default stack starts MinIO and creates the landing bucket. Its setup also
-removes the old bucket notification configuration. It does not upload, move, or
-delete source objects.
+| Schema | What to inspect |
+| --- | --- |
+| RAW | Original member records, redemption payloads, and ingestion-control tables. |
+| STAGING | Parsed, validated member and redemption tables. |
+| GOLD | Country-specific member tables, including India, Australia, and the United States. |
 
-To add Airflow, use the optional `airflow` profile. Load local service settings
-from `.env` and private Snowflake overrides from `.env.local`:
+4. To run SQL, open Workspaces, and create a SQL File, select SKYPOINTS_REVIEWER_ROLE(if not already selected by default) and warehouse SKYPOINTS_WH. [SQL editor guide](https://docs.snowflake.com/en/user-guide/ui-snowsight/workspaces). You ll probably be able to run queries directly. I just gave the information about the role and warehouse, just in case.
 
-~~~sh
+5. You can write any read-only queries. For example, these two queries:
+
+```sql
+-- Review cleaned member records and derived fields.
+SELECT
+    MEMBER_ID,
+    MEMBER_NAME,
+    COUNTRY,
+    AGE,
+    STALE_MEMBER,
+    PARTITION_DATE
+FROM SKYPOINTS.STAGING.MEMBERS
+LIMIT 10;
+```
+
+```sql
+-- Review the country-specific output layout.
+SELECT *
+FROM SKYPOINTS.GOLD.TABLE_INDIA
+LIMIT 10;
+```
+
+You can also inspect TABLE_AUSTRALIA and TABLE_UNITED_STATES in the GOLD schema.
+
+Now, coming to the pipeline, here is how you can use this repository to set up the pipeline that populates the Snowflake tables.
+
+## 2. Run one complete pipeline locally using Docker
+
+One pipeline run takes **both files from one sample folder**, processes them through **RAW → STAGING → GOLD**, and saves the results in Snowflake.
+
+**Prerequisites:** Git, Docker with Docker Compose, and a Snowflake pipeline user with write permissions and key-pair authentication. The evaluator login above provides read-only access.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/mskbaruah25/Skypoints_Snowflake_pipeline.git skypoints-pipeline
+cd skypoints-pipeline
+```
+
+### 2. Configure the Snowflake connection
+
+For a new Snowflake deployment, run the files inside [snowflake setup queries](snowflake%20setup%20queries) as an administrator, in this order:
+
+1. [raw.sql](snowflake%20setup%20queries/raw.sql)
+2. [staging.sql](snowflake%20setup%20queries/staging.sql)
+3. [gold.sql](snowflake%20setup%20queries/gold.sql)
+
+Your pipeline user must have `SKYPOINTS_PIPELINE_ROLE` and a registered RSA public key. See [Snowflake’s key-pair setup instructions](https://docs.snowflake.com/en/user-guide/key-pair-auth).
+
+Place its private key at `secrets/snowflake_key.p8`. Keep the included `.env` settings for the local services, then create `.env.local` in the repository root and fill in your connection details:
+
+```dotenv
+SNOWFLAKE_ACCOUNT=YOUR_ORGANIZATION-YOUR_ACCOUNT
+SNOWFLAKE_USER=YOUR_PIPELINE_USER
+SNOWFLAKE_ROLE=SKYPOINTS_PIPELINE_ROLE
+SNOWFLAKE_WAREHOUSE=SKYPOINTS_WH
+SNOWFLAKE_DATABASE=SKYPOINTS
+SNOWFLAKE_SECRETS_DIR=./secrets
+SNOWFLAKE_PRIVATE_KEY_FILE=/run/secrets/snowflake_key.p8
+SNOWFLAKE_PRIVATE_KEY_PASSPHRASE='YOUR_KEY_PASSPHRASE'
+```
+
+Private Snowflake pipeline credentials and keys are not included in the repository. For an existing deployment, use the configured pipeline user and existing warehouse tables.
+
+### 3. Start the services
+
+Start Docker Desktop, then run:
+
+```bash
 docker compose --env-file .env --env-file .env.local --profile airflow up -d --build
-~~~
+```
 
-Airflow's profile adds PostgreSQL, the API/UI server, the DAG processor, the
-scheduler, and a one-shot metadata setup. These Airflow components share the single
-`skypoints-airflow:dev` image. Spark runs only while a notebook task is executing.
+Wait for the services to become healthy. The `airflow-init` and `minio-init` containers finishing with exit code `0` is expected.
 
-The `skypoints-*` images are local builds with `pull_policy: never`. Keep `--build`
-on the first start after removing images. The build attached to `airflow-init`
-creates the shared Airflow image; its other services reuse that image. Public
-base images and PostgreSQL retain their normal download behavior.
+### 4. Select one sample pair
 
-To stop Airflow while leaving MinIO running:
+The [sample files](Sample%20files/pairs) are included in the repository:
 
-~~~sh
-docker compose --profile airflow stop airflow-scheduler airflow-dag-processor airflow-api-server airflow-db
-~~~
+```text
+Sample files/
+└── pairs/
+    ├── drop_0001/
+    │   ├── members_0001.txt
+    │   └── redemptions_0001.json
+    ├── drop_0002/
+    │   ├── members_0002.txt
+    │   └── redemptions_0002.json
+    └── ... up to drop_0010
+```
 
-Normal stops retain named-volume data. Avoid `down -v` unless you intend to delete
-the named volumes.
+Each `drop` folder contains one complete delivery: a member flat file and a redemption JSON file matching the assignment’s source formats.
 
-## Local access
+For a fresh deployment, use the two files inside **`Sample files/pairs/drop_0001/`**. For an already populated Snowflake deployment, choose a pair that has not previously been ingested.
 
-| Service | Address | Login |
-| --- | --- | --- |
-| MinIO object browser | http://localhost:19001 | admin / admin123 |
-| MinIO S3 API | http://localhost:19000 | Same credentials |
-| Airflow UI | http://localhost:18080 | admin / admin |
-| PostgreSQL metadata | Internal Compose network only | admin / admin |
+### 5. Upload both files to MinIO
 
-Published ports bind to localhost and stay fixed. Container tasks use
-`http://minio:9000` for MinIO. Snowflake remains an external cloud service.
+1. Open [MinIO](http://localhost:19001).
+2. Log in with **username `admin`** and **password `admin123`**.
+3. Open the **`skypoints-landing`** bucket.
+4. Upload both files from your chosen `drop` folder directly into the bucket’s root. For `drop_0001`, these are **`members_0001.txt`** and **`redemptions_0001.json`**.
 
-Existing PostgreSQL volumes retain the logins created during their first setup.
-Changing `AIRFLOW_DB_USERNAME` or `AIRFLOW_DB_PASSWORD` in an environment file
-requires updating that login inside the existing database too. The original local
-metadata owner was `airflow`; its objects are retained, and the current `admin`
-login inherits access to them. The database health check verifies the configured
-username and password with a real SQL connection.
+For the `drop_0001` example, the landing bucket should contain the two files themselves:
 
-## Snowflake configuration
+```text
+skypoints-landing/
+├── members_0001.txt
+└── redemptions_0001.json
+```
 
-Use the existing service user and key-pair authentication. Supply account, user,
-role, warehouse, database, and key passphrase through the private `.env.local`.
-The required RAW, STAGING, and GOLD warehouse tables must already exist; the DAG
-does not provision or reset them.
+Keep only the intended delivery at the bucket root. Move previously processed pairs to a separate archive bucket before uploading another pair.
 
-For a new setup, run these files manually in Snowsight as `ACCOUNTADMIN`, in order:
+### 6. Trigger one run in Airflow
 
-1. [raw.sql](snowflake%20setup%20queries/raw.sql): shared project resources, RAW
-   tables, load buffers, the batch log, and the initial ingestion-lock row.
-2. [staging.sql](snowflake%20setup%20queries/staging.sql): typed member and
-   redemption tables.
-3. [gold.sql](snowflake%20setup%20queries/gold.sql): country tables and the
-   member-location registry.
+1. Open [Airflow](http://localhost:18080).
+2. Log in with **username `admin`** and **password `admin`**.
+3. Open the DAG **`skypoints_ingestion`**.
+4. Click **Trigger**.
+5. Enter a `partition_date` in **DDMMYYYY** format—for example, **`24112026`**.
+6. Confirm the trigger once.
 
-The scripts create missing objects and grant table access to
-`SKYPOINTS_PIPELINE_ROLE`. Existing tables and records are retained. Service-user
-creation, role assignment, and RSA public-key registration remain separate
-authentication setup steps.
+A single trigger executes all three notebooks in sequence using the same processing date. Uploading files alone does not trigger the pipeline.
 
-`SNOWFLAKE_SECRETS_DIR` selects the host directory mounted read-only into the
-scheduler at `/run/secrets`. `SNOWFLAKE_PRIVATE_KEY_FILE` is the corresponding
-container path, normally `/run/secrets/snowflake_key.p8`.
-`SNOWFLAKE_LOCAL_PRIVATE_KEY_FILE` selects the key for manual Mac notebook runs.
-Private overrides and keys are excluded from Git and Docker build contexts.
+### 7. Check the execution and results
 
-Only the scheduler and its task processes receive Snowflake credentials. DAG
-parsing does not access MinIO, Snowflake, credentials, or notebook contents.
+Airflow runs:
 
-## Notebook execution and storage
+```text
+load_raw → load_staging → load_gold
+```
 
-Papermill executes each notebook in a fresh `skypoints` Python kernel from the
-isolated Spark environment. The image includes Java 17, PySpark 3.5.7, the notebook
-libraries, and the pinned S3/Snowflake connector JARs. Spark uses `local[1]` and a
-512 MB driver heap for the local demonstration.
+Wait until all three tasks turn green. If a task fails, open that task’s **Logs** to inspect the error.
 
-Source notebooks are mounted read-only. Executed copies and errors are saved in
-the persistent Airflow logs volume:
+In the Snowflake account configured in `.env.local`, check the RAW, STAGING, and GOLD tables. For example:
 
-~~~text
-/opt/airflow/logs/notebooks/<partition_date>/<run-id-hash>/attempt-<number>/<stage>.ipynb
-~~~
+```sql
+SELECT *
+FROM SKYPOINTS.STAGING.MEMBERS
+WHERE PARTITION_DATE = '24112026'
+LIMIT 10;
+```
 
-Different DAG runs and retries have separate output paths. An unprepared notebook
-without its parameter cell fails before any cells execute.
+The processing date labels the delivery. **It does not filter MinIO files by their upload date:** RAW reads every matching file currently at the landing bucket’s root.
 
-MinIO objects persist in `minio-data`, Airflow metadata in `airflow-db-data`, and
-logs/results in `airflow-logs`. PostgreSQL holds orchestration metadata; business
-records reside in Snowflake RAW, STAGING, and GOLD.
+An identical, already registered batch is skipped by RAW. When retrying the same delivery, use its original processing date. For a new delivery, use another unprocessed sample pair.
 
-## Local development and checks
+### 8. Stop the services when finished
 
-Use the existing `skypoints` virtual environment with Python 3.11. Dependencies
-are listed in `requirements.txt`. Docker uses `requirements.lock` for Airflow and
-`requirements-spark.lock` for the isolated notebook environment.
+```bash
+docker compose --env-file .env --env-file .env.local --profile airflow stop
+```
 
-~~~sh
-skypoints/bin/python -m pip install -r requirements.txt
-skypoints/bin/python -m ipykernel install --sys-prefix --name skypoints --display-name "SkyPoints (Python 3.11)"
-skypoints/bin/python -m pytest -q tests/unit tests/integration/test_notebook_execution.py
-docker compose --env-file .env.example --profile airflow config --quiet
-~~~
+Stopping the services retains MinIO files, Airflow metadata, and logs in Docker volumes.
 
-Unit tests cover date validation and orchestration. Integration tests execute
-tiny temporary notebooks with local kernel ports; they do not run Spark, Docker,
-or Snowflake. They check date injection, leading zeroes, retry output separation,
-source-file preservation, and failure propagation. See [tests](tests/README.md).
+## 3. Project architecture
 
-The separate generator remains in the sibling `../data-generator/` folder, outside
-this Git repository. Its optional container integration is separate from the manual
-upload workflow. The Snowflake setup queries are run manually before the notebooks.
+The processing services run locally in Docker. Business data is stored in Snowflake throughout the RAW, STAGING, and GOLD stages.
 
-The retired standalone Snowflake connection helpers and their test are preserved
-in `archive/` as reference material. They are outside the active package and test
-suite and are excluded from Docker build contexts. The notebooks handle their own
-Snowflake connections.
+| Component | Purpose |
+| --- | --- |
+| MinIO | Provides the S3-compatible landing bucket for source files. |
+| Airflow | Accepts a processing date and runs the three notebooks in sequence. |
+| PySpark | Reads source files and performs parsing, validation, cleaning, and transformations. |
+| Snowflake | Stores RAW records, STAGING data, and GOLD country tables. |
+| PostgreSQL | Stores Airflow’s orchestration metadata. |
 
-See [design](docs/design.md) and [demo instructions](docs/demo.md).
-Codex assisted with implementation and review.
+The three processing stages are:
 
-References: [Airflow parameters](https://airflow.apache.org/docs/apache-airflow/3.4.0/core-concepts/params.html),
-[Papermill parameter cells](https://papermill.readthedocs.io/en/latest/usage-parameterize.html).
+1. RAW: Reads member TXT files and redemption JSON files from MinIO. Preserves source content and ingestion metadata. Uses buffers and a batch fingerprint to publish records and register a successful batch together.
+
+2. STAGING: Reads the selected RAW partition, parses the records, validates fields, cleans member IDs, checks duplicates and conflicts, and calculates age and member staleness. Rerunning a partition refreshes that partition’s staging rows.
+
+3. GOLD: Reads the selected STAGING partition and publishes members into country-specific tables. India and Australia use their supplied column layouts; other countries use the USA layout. India’s unsupported “Individual or Corporate” field is omitted. Member-location tracking supports country changes and prevents older partitions from replacing newer published records.
+
+Airflow is manually triggered. Uploading files alone does not start processing. MinIO files, Airflow metadata, and execution logs persist in Docker volumes; the business tables remain in Snowflake.
