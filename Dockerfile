@@ -19,8 +19,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 minio \
     && useradd --uid 10001 --gid minio --no-create-home minio \
-    && mkdir -p /data /queue \
-    && chown -R minio:minio /data /queue
+    && mkdir -p /data \
+    && chown -R minio:minio /data
 COPY --from=minio-builder /out/minio /usr/local/bin/minio
 USER minio
 EXPOSE 9000 9001
@@ -28,6 +28,15 @@ ENTRYPOINT ["minio"]
 CMD ["server", "/data", "--console-address", ":9001"]
 
 FROM ${JAVA_BASE_IMAGE} AS java-runtime
+
+# One-shot bucket setup; this target does not install Airflow or Spark.
+FROM ${PYTHON_BASE_IMAGE} AS minio-init
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+RUN pip install --no-cache-dir minio==7.2.20
+COPY scripts/bootstrap_minio.py /app/bootstrap_minio.py
+USER 10001:10001
+ENTRYPOINT ["python", "/app/bootstrap_minio.py"]
 
 # Shared by the Airflow API, scheduler, DAG processor, and one-shot setup jobs.
 FROM ${AIRFLOW_BASE_IMAGE} AS airflow
@@ -47,7 +56,9 @@ ARG SNOWFLAKE_JDBC_VERSION=4.0.2
 COPY --chown=airflow:0 requirements.lock requirements-spark.lock /tmp/
 RUN pip install --no-cache-dir "apache-airflow==3.4.0" -r /tmp/requirements.lock \
     && /opt/spark-venv/bin/pip install --no-cache-dir \
-       "pyspark==${PYSPARK_VERSION}" -r /tmp/requirements-spark.lock
+       "pyspark==${PYSPARK_VERSION}" -r /tmp/requirements-spark.lock \
+    && /opt/spark-venv/bin/python -m ipykernel install --sys-prefix \
+       --name skypoints --display-name "SkyPoints (Python 3.11)"
 # Fetch pinned Maven artifacts and verify repository-published checksums.
 COPY --chown=airflow:0 scripts/download_spark_jars.py /tmp/download_spark_jars.py
 RUN python /tmp/download_spark_jars.py \
@@ -62,21 +73,9 @@ COPY --chown=airflow:0 sql /opt/airflow/sql
 COPY --chown=airflow:0 scripts /opt/airflow/scripts
 ENV PYTHONPATH=/opt/airflow/src
 ENV SKYPOINTS_SPARK_JARS=/opt/spark-extra-jars
+ENV SKYPOINTS_PROJECT_ROOT=/opt/airflow
+ENV SKYPOINTS_NOTEBOOK_KERNEL=skypoints
 # Retain the official Airflow entrypoint. Compose selects the Airflow command.
-
-# Thin HTTP receiver; has no Java/Spark installation or Snowflake key.
-FROM ${PYTHON_BASE_IMAGE} AS event-handler
-WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app/src
-COPY requirements-event-handler.lock /tmp/requirements-event-handler.lock
-RUN pip install --no-cache-dir -r /tmp/requirements-event-handler.lock \
-    && groupadd --gid 10001 app \
-    && useradd --uid 10001 --gid app --no-create-home app
-COPY src /app/src
-USER app
-CMD ["uvicorn", "skypoints.event_handler:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # The private generator is a named context supplied only for this build target.
 # Its source remains outside the pipeline folder; no Git operation is involved.

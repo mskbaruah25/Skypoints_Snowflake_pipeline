@@ -1,16 +1,11 @@
-"""Idempotently create the project bucket and ready-manifest notification filter."""
+"""Create the landing bucket and disable notifications for manual Airflow runs."""
 
 import os
 from urllib.parse import urlsplit
 
 from minio import Minio
 from minio.error import S3Error
-from minio.notificationconfig import (
-    NotificationConfig,
-    PrefixFilterRule,
-    QueueConfig,
-    SuffixFilterRule,
-)
+from minio.notificationconfig import NotificationConfig
 
 
 def main() -> None:
@@ -31,25 +26,10 @@ def main() -> None:
         except S3Error as exc:
             if exc.code != "BucketAlreadyOwnedByYou":
                 raise
-    client.set_bucket_notification(
-        bucket,
-        NotificationConfig(
-            queue_config_list=[
-                QueueConfig(
-                    queue=os.environ["MINIO_WEBHOOK_TARGET_ARN"],
-                    events=["s3:ObjectCreated:Put", "s3:ObjectCreated:CompleteMultipartUpload"],
-                    config_id="skypoints-ready-manifests",
-                    prefix_filter_rule=PrefixFilterRule(
-                        os.environ.get("SKYPOINTS_MANIFEST_PREFIX", "deliveries/"),
-                    ),
-                    suffix_filter_rule=SuffixFilterRule(
-                        os.environ.get("SKYPOINTS_MANIFEST_SUFFIX", "/ready.json"),
-                    ),
-                )
-            ]
-        ),
-    )
-    print(f"Configured ready-manifest notifications for {bucket}.")
+    # Remove the old ready.json notification rule from existing buckets too.
+    # This changes notification configuration only; objects are left in place.
+    client.set_bucket_notification(bucket, NotificationConfig())
+    print(f"Landing bucket {bucket} is ready for manually triggered runs.")
 
 
 if __name__ == "__main__":

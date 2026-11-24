@@ -1,4 +1,4 @@
-# Initial scaffold; see README.md for the remaining implementation work.
+# MinIO starts by default; opt in to orchestration with --profile airflow.
 # Local demonstration stack; Snowflake remains an external cloud service.
 # One project Dockerfile has named targets; Compose starts the separate containers.
 name: skypoints
@@ -14,12 +14,14 @@ x-airflow-environment: &airflow-environment
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"
   AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
   AIRFLOW__CORE__DEFAULT_TIMEZONE: UTC
-  AIRFLOW__CORE__PARALLELISM: "2"
+  AIRFLOW__CORE__PARALLELISM: "1"
   AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "1"
   AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
   AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: "1"
   PYTHONPATH: /opt/airflow/src
   SKYPOINTS_DAG_ID: skypoints_ingestion
+  SKYPOINTS_PROJECT_ROOT: /opt/airflow
 
 x-airflow-dependencies: &airflow-dependencies
   airflow-db:
@@ -40,10 +42,11 @@ x-airflow-common: &airflow-common
     - pipeline
   restart: unless-stopped
   init: true
-  mem_limit: 1g
+  mem_limit: 512m
 
 services:
   airflow-db:
+    profiles: [airflow]
     image: postgres:16.11-bookworm
     environment:
       POSTGRES_USER: ${AIRFLOW_DB_USERNAME:-admin}
@@ -52,7 +55,10 @@ services:
     volumes:
       - airflow-db-data:/var/lib/postgresql/data
     healthcheck:
-      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      # Check the configured login too; pg_isready accepts a nonexistent username.
+      test:
+        - CMD-SHELL
+        - 'PGPASSWORD="$${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT 1" >/dev/null'
       interval: 10s
       timeout: 5s
       retries: 10
@@ -60,7 +66,7 @@ services:
     networks:
       - pipeline
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 256m
 
   minio:
     image: skypoints-minio:dev
@@ -75,18 +81,13 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
-      MINIO_NOTIFY_WEBHOOK_ENABLE_AIRFLOW: "on"
-      MINIO_NOTIFY_WEBHOOK_ENDPOINT_AIRFLOW: http://event-handler:8000/events/minio
-      MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_AIRFLOW: ${MINIO_WEBHOOK_AUTHORIZATION:?Set MINIO_WEBHOOK_AUTHORIZATION}
-      MINIO_NOTIFY_WEBHOOK_QUEUE_DIR_AIRFLOW: /queue
-      MINIO_NOTIFY_WEBHOOK_QUEUE_LIMIT_AIRFLOW: "10000"
+      MINIO_NOTIFY_WEBHOOK_ENABLE_AIRFLOW: "off"
     ports:
       # Fixed host ports: do not switch ports to work around a conflict.
       - "127.0.0.1:19000:9000"
       - "127.0.0.1:19001:9001"
     volumes:
       - minio-data:/data
-      - minio-event-queue:/queue
     healthcheck:
       # curl is included in the MinIO runtime image.
       test: [CMD, curl, --fail, --silent, http://localhost:9000/minio/health/ready]
@@ -98,10 +99,11 @@ services:
       - pipeline
     restart: unless-stopped
     init: true
-    mem_limit: 1g
+    mem_limit: 512m
 
   airflow-init:
     <<: *airflow-common
+    profiles: [airflow]
     # Build the shared image once; all Airflow services reuse this tag.
     build:
       context: .
@@ -135,6 +137,7 @@ services:
 
   airflow-api-server:
     <<: *airflow-common
+    profiles: [airflow]
     command: [api-server, --workers, "1"]
     ports:
       - "127.0.0.1:18080:8080"
@@ -152,6 +155,7 @@ services:
 
   airflow-dag-processor:
     <<: *airflow-common
+    profiles: [airflow]
     command: [dag-processor]
     depends_on: *airflow-dependencies
     healthcheck:
@@ -163,6 +167,7 @@ services:
 
   airflow-scheduler:
     <<: *airflow-common
+    profiles: [airflow]
     command: [scheduler]
     environment:
       <<: *airflow-environment
@@ -181,8 +186,10 @@ services:
       SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:-}
       PYSPARK_PYTHON: /opt/spark-venv/bin/python
       SKYPOINTS_SPARK_SUBMIT: /opt/spark-venv/bin/spark-submit
-      SKYPOINTS_SPARK_MASTER: local[2]
-      SKYPOINTS_SPARK_DRIVER_MEMORY: 1g
+      SKYPOINTS_SPARK_MASTER: local[1]
+      SKYPOINTS_SPARK_DRIVER_MEMORY: 512m
+      SKYPOINTS_NOTEBOOK_KERNEL: skypoints
+      SKYPOINTS_NOTEBOOK_OUTPUT_DIR: /opt/airflow/logs/notebooks
     volumes:
       - ./dags:/opt/airflow/dags:ro
       - ./src:/opt/airflow/src:ro
@@ -201,73 +208,34 @@ services:
       <<: *airflow-dependencies
       airflow-api-server:
         condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test: [CMD-SHELL, 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
       interval: 30s
       timeout: 15s
       retries: 5
       start_period: 60s
-    mem_limit: 4g
+    mem_limit: 2g
     stop_grace_period: 60s
 
-  event-handler:
-    image: skypoints-event-handler:dev
+  minio-init:
+    # A small one-shot image keeps MinIO startup independent of the Airflow image.
+    image: skypoints-minio-init:dev
     build:
       context: .
       dockerfile: Dockerfile
-      target: event-handler
-    command: [uvicorn, skypoints.event_handler:app, --host, 0.0.0.0, --port, "8000"]
-    environment:
-      AIRFLOW_API_URL: http://airflow-api-server:8080
-      AIRFLOW_TRIGGER_USERNAME: ${AIRFLOW_TRIGGER_USERNAME:-admin}
-      AIRFLOW_TRIGGER_PASSWORD: ${AIRFLOW_TRIGGER_PASSWORD:?Set AIRFLOW_TRIGGER_PASSWORD}
-      MINIO_WEBHOOK_AUTHORIZATION: ${MINIO_WEBHOOK_AUTHORIZATION:?Set MINIO_WEBHOOK_AUTHORIZATION}
-      MINIO_BUCKET: ${MINIO_BUCKET:-skypoints-landing}
-      SKYPOINTS_DAG_ID: skypoints_ingestion
-      SKYPOINTS_MANIFEST_PREFIX: deliveries/
-      SKYPOINTS_MANIFEST_SUFFIX: /ready.json
-    depends_on:
-      airflow-api-server:
-        condition: service_healthy
-      airflow-scheduler:
-        condition: service_healthy
-      airflow-dag-processor:
-        condition: service_healthy
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
-    networks:
-      - pipeline
-    restart: unless-stopped
-    init: true
-    mem_limit: 256m
-
-  minio-init:
-    # Reuse the custom Python runtime; its locked dependencies include the MinIO SDK.
-    image: skypoints-airflow:dev
-    entrypoint: [python, /opt/airflow/scripts/bootstrap_minio.py]
+      target: minio-init
     environment:
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-skypoints-landing}
       MINIO_REGION: us-east-1
-      MINIO_WEBHOOK_TARGET_ARN: arn:minio:sqs::AIRFLOW:webhook
-      SKYPOINTS_MANIFEST_PREFIX: deliveries/
-      SKYPOINTS_MANIFEST_SUFFIX: /ready.json
-    volumes:
-      - ./scripts:/opt/airflow/scripts:ro
     depends_on:
       minio:
-        condition: service_healthy
-      event-handler:
         condition: service_healthy
     networks:
       - pipeline
@@ -320,7 +288,6 @@ services:
 
 volumes:
   minio-data:
-  minio-event-queue:
   airflow-db-data:
   airflow-logs:
   generator-output:

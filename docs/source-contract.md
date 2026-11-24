@@ -19,9 +19,12 @@ Resolve and record these decisions before implementing the parser and SQL:
 8. Calculation date: use an explicit as-of date for age and greater-than-90-day
    staleness. Missing optional dates produce unknown derived values.
 
-The proposed delivery lives under `deliveries/<batch_id>/`. A `ready.json` uploaded
-last identifies the exact files, checksums/object versions, immutable source version,
-and calculation date. Its detailed schema and JSON file framing are not final yet.
+The current manual workflow accepts `members_*.txt` and `redemptions_*.json` at the
+landing bucket root. The operator uploads a complete delivery before triggering
+Airflow and supplies its calculation/partition date in DDMMYYYY format. The same
+date flows through RAW, STAGING, and GOLD. It does not select files by upload time.
+Keep the files stable during execution and retries. A ready manifest is not used
+by this manual workflow; RAW's content fingerprint identifies a repeated batch.
 
 Delivery identity and source versions must be retained through raw, staging, and
 publication audit records. A changed payload must not overwrite an immutable batch.

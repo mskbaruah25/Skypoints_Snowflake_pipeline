@@ -3,6 +3,7 @@
 -c https://raw.githubusercontent.com/apache/airflow/constraints-3.4.0/constraints-3.11.txt
 apache-airflow==3.4.0
 apache-airflow-providers-fab==3.10.2
+apache-airflow-providers-standard==1.21.0
 apache-airflow-providers-apache-spark==6.3.4
 minio==7.2.20
 snowflake-connector-python==4.8.1

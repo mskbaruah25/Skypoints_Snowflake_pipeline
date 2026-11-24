@@ -1,4 +1,8 @@
-# Direct dependencies for the isolated Spark Python environment.
+# Direct dependencies for the isolated Spark and notebook Python environment.
 # PySpark 3.5.7 is installed explicitly by the Dockerfile.
 minio==7.2.20
 cryptography==50.0.2
+snowflake-connector-python==4.8.1
+python-dotenv==1.2.4
+ipykernel==7.4.0
+papermill==2.6.0
