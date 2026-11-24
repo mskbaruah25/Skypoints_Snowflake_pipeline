@@ -1,1 +1,0 @@
--- Implementation pending: typed profiles/transactions, age, stale flag, as-of date.

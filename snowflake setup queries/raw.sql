@@ -1,0 +1,86 @@
+-- Run manually in Snowsight: raw.sql, then staging.sql, then gold.sql.
+-- These scripts create missing objects without replacing existing tables or data.
+-- The service user and its RSA public key are configured separately.
+-- Reference: https://docs.snowflake.com/en/sql-reference/sql/create-table
+
+USE ROLE ACCOUNTADMIN;
+ALTER SESSION SET TIMEZONE = 'UTC';
+
+-- Shared project resources. Existing settings are retained on a rerun.
+CREATE DATABASE IF NOT EXISTS SKYPOINTS;
+
+CREATE WAREHOUSE IF NOT EXISTS SKYPOINTS_WH
+    WAREHOUSE_SIZE = 'XSMALL'
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = TRUE;
+
+CREATE ROLE IF NOT EXISTS SKYPOINTS_PIPELINE_ROLE;
+
+GRANT USAGE ON DATABASE SKYPOINTS TO ROLE SKYPOINTS_PIPELINE_ROLE;
+GRANT USAGE ON WAREHOUSE SKYPOINTS_WH TO ROLE SKYPOINTS_PIPELINE_ROLE;
+
+-- The existing service user must have SKYPOINTS_PIPELINE_ROLE assigned to it.
+-- For the project's existing service user, that grant is:
+-- GRANT ROLE SKYPOINTS_PIPELINE_ROLE TO USER SKYPOINTS_PIPELINE;
+
+USE WAREHOUSE SKYPOINTS_WH;
+
+CREATE SCHEMA IF NOT EXISTS SKYPOINTS.RAW;
+
+-- Preserve member lines and redemption envelopes before parsing them in STAGING.
+-- PARTITION_DATE is DDMMYYYY text, so leading zeroes are preserved.
+CREATE TABLE IF NOT EXISTS SKYPOINTS.RAW.MEMBERS_RAW (
+    RAW_RECORD      VARCHAR(16777216) NOT NULL,
+    SOURCE_FILE     VARCHAR(16777216) NOT NULL,
+    BATCH_ID        VARCHAR(16777216) NOT NULL,
+    INGESTED_AT     TIMESTAMP_NTZ(9) NOT NULL,
+    FILE_ID         VARCHAR(16777216),
+    PARTITION_DATE  VARCHAR(8)
+);
+
+CREATE TABLE IF NOT EXISTS SKYPOINTS.RAW.REDEMPTIONS_RAW (
+    RAW_PAYLOAD     VARIANT NOT NULL,
+    SOURCE_FILE     VARCHAR(16777216) NOT NULL,
+    BATCH_ID        VARCHAR(16777216) NOT NULL,
+    INGESTED_AT     TIMESTAMP_NTZ(9) NOT NULL,
+    FILE_ID         VARCHAR(16777216),
+    PARTITION_DATE  VARCHAR(8)
+);
+
+-- LIKE copies the columns and constraints, without copying source records.
+CREATE TABLE IF NOT EXISTS SKYPOINTS.RAW.MEMBERS_LOAD_BUFFER
+    LIKE SKYPOINTS.RAW.MEMBERS_RAW;
+
+CREATE TABLE IF NOT EXISTS SKYPOINTS.RAW.REDEMPTIONS_LOAD_BUFFER
+    LIKE SKYPOINTS.RAW.REDEMPTIONS_RAW;
+
+-- A successful batch and its fingerprint are committed together by raw.ipynb.
+CREATE TABLE IF NOT EXISTS SKYPOINTS.RAW.BATCH_INGESTION_LOG (
+    BATCH_HASH             VARCHAR(64) NOT NULL,
+    BATCH_ID               VARCHAR(32) NOT NULL,
+    MEMBERS_ROW_COUNT      NUMBER(38, 0) NOT NULL,
+    REDEMPTIONS_ROW_COUNT  NUMBER(38, 0) NOT NULL,
+    LOADED_AT              TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP() NOT NULL
+);
+
+-- RAW and GOLD update this shared row to serialize publication transactions.
+CREATE TABLE IF NOT EXISTS SKYPOINTS.RAW.INGESTION_LOCK (
+    LOCK_ID       NUMBER(38, 0) NOT NULL,
+    LOCK_VERSION  NUMBER(38, 0) NOT NULL
+);
+
+-- Seed the lock once. Rerunning setup preserves its current version.
+MERGE INTO SKYPOINTS.RAW.INGESTION_LOCK AS target
+USING (SELECT 1 AS LOCK_ID) AS source
+    ON target.LOCK_ID = source.LOCK_ID
+WHEN NOT MATCHED THEN
+    INSERT (LOCK_ID, LOCK_VERSION)
+    VALUES (source.LOCK_ID, 0);
+
+-- Tables may be created by the setup administrator and used by the pipeline role.
+GRANT USAGE, CREATE TABLE, CREATE STAGE
+    ON SCHEMA SKYPOINTS.RAW TO ROLE SKYPOINTS_PIPELINE_ROLE;
+
+GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE
+    ON ALL TABLES IN SCHEMA SKYPOINTS.RAW TO ROLE SKYPOINTS_PIPELINE_ROLE;

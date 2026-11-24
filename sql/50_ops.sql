@@ -1,1 +1,0 @@
--- Implementation pending: manifests, source versions, rejects, and publication audit.

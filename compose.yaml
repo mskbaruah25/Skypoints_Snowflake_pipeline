@@ -31,11 +31,12 @@ x-airflow-dependencies: &airflow-dependencies
 
 x-airflow-common: &airflow-common
   image: skypoints-airflow:dev
+  # airflow-init builds this shared image locally; consumers must not pull it.
+  pull_policy: never
   environment: *airflow-environment
   volumes:
     - ./dags:/opt/airflow/dags:ro
     - ./src:/opt/airflow/src:ro
-    - ./sql:/opt/airflow/sql:ro
     - ./scripts:/opt/airflow/scripts:ro
     - airflow-logs:/opt/airflow/logs
   networks:
@@ -70,6 +71,7 @@ services:
 
   minio:
     image: skypoints-minio:dev
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile
@@ -193,7 +195,6 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags:ro
       - ./src:/opt/airflow/src:ro
-      - ./sql:/opt/airflow/sql:ro
       - ./scripts:/opt/airflow/scripts:ro
       - airflow-logs:/opt/airflow/logs
       # Mount the directory so an absent warehouse key does not block local startup.
@@ -224,6 +225,7 @@ services:
   minio-init:
     # A small one-shot image keeps MinIO startup independent of the Airflow image.
     image: skypoints-minio-init:dev
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile
@@ -248,6 +250,7 @@ services:
     # Manual source uploads are the default; this tool is explicitly opt-in.
     profiles: [tools]
     image: skypoints-data-generator:dev
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile

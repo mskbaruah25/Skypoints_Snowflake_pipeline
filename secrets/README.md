@@ -8,10 +8,9 @@ values in the ignored `.env.local` override.
 Select that override with `docker compose --env-file .env.local ...`.
 
 For local Python and notebooks, set `SNOWFLAKE_LOCAL_PRIVATE_KEY_FILE` to the host
-key path in `.env.local`. The connection helper uses this host-specific setting
-locally; Compose passes only the container key path to the scheduler. Set
-`SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` privately in the override, or use the local CLI's
-`check-snowflake --prompt` option for an interactive check.
+key path in `.env.local`. The notebooks use this host-specific setting locally;
+Compose passes only the container key path to the scheduler. Set
+`SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` privately in the override.
 
 Git ignores every file in this directory except this README. Docker excludes the
 entire directory from image build contexts. Compose mounts the directory read-only

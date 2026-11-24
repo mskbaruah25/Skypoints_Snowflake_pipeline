@@ -69,7 +69,6 @@ RUN python /tmp/download_spark_jars.py \
     --output /opt/spark-extra-jars
 COPY --chown=airflow:0 src /opt/airflow/src
 COPY --chown=airflow:0 dags /opt/airflow/dags
-COPY --chown=airflow:0 sql /opt/airflow/sql
 COPY --chown=airflow:0 scripts /opt/airflow/scripts
 ENV PYTHONPATH=/opt/airflow/src
 ENV SKYPOINTS_SPARK_JARS=/opt/spark-extra-jars

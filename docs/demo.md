@@ -2,9 +2,7 @@
 
 ## Before the first orchestrated run
 
-The approved configuration changes in
-[notebook-airflow-changes.md](notebook-airflow-changes.md) have been applied. Each
-notebook now has a parameter cell immediately after its imports. For a standalone
+Each notebook has a parameter cell immediately after its imports. For a standalone
 notebook run, put a specific date in that cell or leave it as None to use today.
 The runner refuses notebooks without a parameter cell.
 

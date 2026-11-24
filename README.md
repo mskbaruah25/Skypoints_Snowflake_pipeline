@@ -5,7 +5,7 @@ Airline loyalty data processing with MinIO, local PySpark, Airflow, and Snowflak
 The RAW, STAGING, and GOLD notebooks hold the processing logic. The manual Airflow
 DAG runs them in order with one selected processing date. The orchestration code
 and small-kernel tests are in place. The approved notebook configuration changes
-have been applied; review [the exact changes](docs/notebook-airflow-changes.md).
+have been applied.
 A Docker image build and a real orchestrated warehouse run have not been tested
 for this change.
 
@@ -56,6 +56,11 @@ Airflow's profile adds PostgreSQL, the API/UI server, the DAG processor, the
 scheduler, and a one-shot metadata setup. These Airflow components share the single
 `skypoints-airflow:dev` image. Spark runs only while a notebook task is executing.
 
+The `skypoints-*` images are local builds with `pull_policy: never`. Keep `--build`
+on the first start after removing images. The build attached to `airflow-init`
+creates the shared Airflow image; its other services reuse that image. Public
+base images and PostgreSQL retain their normal download behavior.
+
 To stop Airflow while leaving MinIO running:
 
 ~~~sh
@@ -91,6 +96,20 @@ role, warehouse, database, and key passphrase through the private `.env.local`.
 The required RAW, STAGING, and GOLD warehouse tables must already exist; the DAG
 does not provision or reset them.
 
+For a new setup, run these files manually in Snowsight as `ACCOUNTADMIN`, in order:
+
+1. [raw.sql](snowflake%20setup%20queries/raw.sql): shared project resources, RAW
+   tables, load buffers, the batch log, and the initial ingestion-lock row.
+2. [staging.sql](snowflake%20setup%20queries/staging.sql): typed member and
+   redemption tables.
+3. [gold.sql](snowflake%20setup%20queries/gold.sql): country tables and the
+   member-location registry.
+
+The scripts create missing objects and grant table access to
+`SKYPOINTS_PIPELINE_ROLE`. Existing tables and records are retained. Service-user
+creation, role assignment, and RSA public-key registration remain separate
+authentication setup steps.
+
 `SNOWFLAKE_SECRETS_DIR` selects the host directory mounted read-only into the
 scheduler at `/run/secrets`. `SNOWFLAKE_PRIVATE_KEY_FILE` is the corresponding
 container path, normally `/run/secrets/snowflake_key.p8`.
@@ -99,12 +118,6 @@ Private overrides and keys are excluded from Git and Docker build contexts.
 
 Only the scheduler and its task processes receive Snowflake credentials. DAG
 parsing does not access MinIO, Snowflake, credentials, or notebook contents.
-
-The existing read-only connection check is available with:
-
-~~~sh
-skypoints/bin/python -m skypoints.cli check-snowflake
-~~~
 
 ## Notebook execution and storage
 
@@ -140,14 +153,19 @@ skypoints/bin/python -m pytest -q tests/unit tests/integration/test_notebook_exe
 docker compose --env-file .env.example --profile airflow config --quiet
 ~~~
 
-Unit tests cover connection setup and orchestration. Integration tests execute
+Unit tests cover date validation and orchestration. Integration tests execute
 tiny temporary notebooks with local kernel ports; they do not run Spark, Docker,
 or Snowflake. They check date injection, leading zeroes, retry output separation,
 source-file preservation, and failure propagation. See [tests](tests/README.md).
 
 The separate generator remains in the sibling `../data-generator/` folder, outside
 this Git repository. Its optional container integration is separate from the manual
-upload workflow. Legacy Python/SQL scaffold files are not used by the notebook DAG.
+upload workflow. The Snowflake setup queries are run manually before the notebooks.
+
+The retired standalone Snowflake connection helpers and their test are preserved
+in `archive/` as reference material. They are outside the active package and test
+suite and are excluded from Docker build contexts. The notebooks handle their own
+Snowflake connections.
 
 See [design](docs/design.md) and [demo instructions](docs/demo.md).
 Codex assisted with implementation and review.

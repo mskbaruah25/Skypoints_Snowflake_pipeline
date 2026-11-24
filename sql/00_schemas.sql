@@ -1,2 +1,0 @@
--- Implementation pending: create RAW, STAGING, CORE, MART, and OPS schemas.
--- Snowflake account, identity, role, database, and warehouse setup is explicit.

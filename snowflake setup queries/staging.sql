@@ -1,0 +1,44 @@
+-- Run after raw.sql, using the same project account.
+-- Column names, types and nullability match the working STAGING tables.
+-- Reference: https://docs.snowflake.com/en/sql-reference/sql/create-table
+
+USE ROLE ACCOUNTADMIN;
+USE WAREHOUSE SKYPOINTS_WH;
+
+CREATE SCHEMA IF NOT EXISTS SKYPOINTS.STAGING;
+
+-- Typed member profiles, including derived values and the processing partition.
+CREATE TABLE IF NOT EXISTS SKYPOINTS.STAGING.MEMBERS (
+    MEMBER_NAME       VARCHAR(255) NOT NULL,
+    MEMBER_ID         VARCHAR(18) NOT NULL,
+    ENROLLMENT_DATE   DATE NOT NULL,
+    LAST_FLIGHT_DATE  DATE,
+    TIER_CODE         VARCHAR(5),
+    AGENT_NAME        VARCHAR(255),
+    STATE             VARCHAR(5),
+    COUNTRY           VARCHAR(5),
+    DOB               DATE,
+    IS_ACTIVE         VARCHAR(1),
+    POST_CODE         NUMBER(5, 0),
+    PARTITION_DATE    VARCHAR(8) NOT NULL,
+    AGE               NUMBER(38, 0),
+    STALE_MEMBER      BOOLEAN
+);
+
+-- One row per flattened redemption transaction.
+CREATE TABLE IF NOT EXISTS SKYPOINTS.STAGING.REDEMPTIONS (
+    MEMBER_ID       VARCHAR(18) NOT NULL,
+    FEED_DATE       DATE NOT NULL,
+    TXN_ID          VARCHAR(16777216) NOT NULL,
+    TXN_DATE        DATE NOT NULL,
+    PARTNER         VARCHAR(16777216) NOT NULL,
+    MILES_REDEEMED  NUMBER(38, 0) NOT NULL,
+    STATUS          VARCHAR(16777216) NOT NULL,
+    PARTITION_DATE  VARCHAR(8) NOT NULL
+);
+
+GRANT USAGE, CREATE TABLE, CREATE STAGE
+    ON SCHEMA SKYPOINTS.STAGING TO ROLE SKYPOINTS_PIPELINE_ROLE;
+
+GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE
+    ON ALL TABLES IN SCHEMA SKYPOINTS.STAGING TO ROLE SKYPOINTS_PIPELINE_ROLE;
